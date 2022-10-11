@@ -89,15 +89,19 @@ def getApiKeyByEntityType(entity_type):
 def getDeviceConfiguration():
     args = request.args        
     data = getDeviceByPcbId(args.get("id"))
+    if len(data) == 0:
+        return jsonify({"error": "No device created for this PCB ID",}), 403
     if len(data) > 1:
         return jsonify({"error": "More than one device for this PCB ID",}), 403
     else:
         device_id=getDeviceIdByEntityName(data[0]["id"])
         device_config['device_id']=device_id
         api_key=getApiKeyByEntityType(data[0]["type"]) # test if None
+        if device_id is None:
+            return jsonify({"error": "No service group found for this PCB ID",}), 403
         device_config['api_key']=api_key
         return jsonify(device_config)
 
 
 if __name__ == '__main__':
-    app.run(port=SMARTCONFIG_PORT,debug=True)
+    app.run(host='0.0.0.0',port=SMARTCONFIG_PORT)
