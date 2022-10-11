@@ -30,6 +30,7 @@ from flask import Flask, request, jsonify
 # Iot-Agent address and port
 
 # Get environment variables
+SMARTCONFIG_PORT = os.getenv('SMARTCONFIG_PORT')
 ORION_HOST = os.getenv('ORION_HOST')
 ORION_PORT = os.getenv('ORION_PORT')
 IOTA_HOST = os.getenv('IOTA_HOST')
@@ -99,4 +100,4 @@ def getDeviceConfiguration():
 
 
 if __name__ == '__main__':
-    app.run(port=4500,debug=True)
+    app.run(port=SMARTCONFIG_PORT,debug=True)
