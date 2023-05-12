@@ -2,22 +2,26 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
 #include <ArduinoJson.h>
-#include <DHT.h>
+#include "Arduino.h"
+#include "Wire.h"
 #include <WiFiManager.h> // https://github.com/tzapu/WiFiManager 
 #include "PubSubClient.h"
 
 // ############### CONSTANTS ################# //
 
-//General
+//Generalcd 
 const char* SERVER_URL="200.19.187.67"; // Defined. Both MQTT and config servers
 const String SERVER_PORT="50002"; // Defined
 const int PERIODICITY=5000; // Defined milliseconds
 const String PATH_CONFIG="/device?id="; // Fixed
 
 //Device-specific
-#define DHTTYPE DHT11 // DHT 11
-#define DHTPIN 3 //PINO DIGITAL UTILIZADO PELO SENSOR
-const String DEVICE_TYPE = "Temp";
+#define I2Caddress 0x48
+#define MARGEMDEERRO 200
+#define HOURSTOMILLIS 3600000.0   //Valor de 1 hora em millisegundos
+#define CORRENTEMAXIMA 52     //Corrente maxima enviada para o ads1115 convertida na proporção 100A:50mA
+#define TENSAOMAXIMA 0.512    //Tensão maxima lida no ads1115
+const String DEVICE_TYPE = "Curr";
 
 // ############### DEFAULT VARIABLES ################# //
 
@@ -30,12 +34,22 @@ String topic_publish; // defined
 String topic_subscribe; // defined
 
 //Device-specific
-float temperature = 0; //VARIÁVEL DO TIPO FLOAT
-float temperatureAnt = 0;
-float humidity = 0; //VARIÁVEL DO TIPO FLOAT
-float humidityAnt = 0;
-char data[10];
-char valueRequest[10];
+float consumoTotal = 0;
+unsigned long inicioTempoLigado =0;
+unsigned long fimTempoLigado =0;
+bool estaLigado = false;
+double kwValue;
+double maxValue = 0, correnteAtual = 0, maxValueAnt = 0;
+
+int i = 0;
+float multiplier = 0.000015625;
+
+char data[20] = "";
+char valueRequest[350] = "";
+
+// Read two bytes and convert to full 16-bit int
+int16_t convertedValue;
+int16_t actualValue[19];
 
 // ############### OBJECTS ################# //
 
@@ -46,7 +60,7 @@ WiFiClient httpClient;
 HTTPClient http;
 
 //Device-specific
-DHT dht(DHTPIN, DHTTYPE);
+//DHT dht(DHTPIN, DHTTYPE);
 
 // ############# PROTOTYPES ############### //
 
@@ -57,7 +71,7 @@ void initConfig();
 int httpRequest(String path);
 
 //Device-specific
-void initDHT();
+//void initWire();
 void deviceControl();//recebe e envia informações do dispositivo
 
 // ############## SETUP ################# //
@@ -71,7 +85,7 @@ void setup() {
     
   // ## JUST CHANGE IN THIS PART ## //
   
-  initDHT(); 
+  //initWire(); 
   
   // ############################## //
 }
@@ -85,6 +99,14 @@ void loop() {
 
   // ## JUST CHANGE IN THIS PART ## //
   
+  calcularConsumo();
+  Serial.print("Consumo Total: ");
+  Serial.println(consumoTotal);
+  snprintf(data, sizeof(data), "%f", consumoTotal);
+  strcat(valueRequest, data);
+  mqtt.publish(topic_publish.c_str(), valueRequest);
+  consumoTotal = 0;
+  strcpy(valueRequest, "c|");
   deviceControl();
 
   // ############################## //
@@ -224,47 +246,125 @@ void reconnect() {
 
 // ## DEFINE YOUR FUNCTIONS STARTING HERE ## //
 
-void initDHT(){
-  dht.begin(); //Inicializa o sensor
-}
-
 void deviceControl() 
 {
+  
+  Wire.begin(0, 2);  
+  
+  // Step 1: Point to Config register - set to continuous conversion
+  Wire.beginTransmission(I2Caddress);
+
+  // Point to Config Register
+  Wire.write(0b00000001);
+
+  // Write the MSB + LSB of Config Register
+  // MSB: Bits 15:8
+  // Bit  15    0=No effect, 1=Begin Single Conversion (in power down mode)
+  // Bits 14:12   How to configure A0 to A3 (comparator or single ended)
+  // Bits 11:9  Programmable Gain 000=6.144v 001=4.096v 010=2.048v .... 111=0.256v
+  // Bits 8     0=Continuous conversion mode, 1=Power down single shot
+  Wire.write(0b00001000);
+
+  // LSB: Bits 7:0
+  // Bits 7:5 Data Rate (Samples per second) 000=8, 001=16, 010=32, 011=64,
+  //      100=128, 101=250, 110=475, 111=860
+  // Bit  4   Comparator Mode 0=Traditional, 1=Window
+  // Bit  3   Comparator Polarity 0=low, 1=high
+  // Bit  2   Latching 0=No, 1=Yes
+  // Bits 1:0 Comparator # before Alert pin goes high
+  //      00=1, 01=2, 10=4, 11=Disable this feature
+  Wire.write(0b11100010);
+
+  // Send the above bytes as an I2C WRITE to the module
+  Wire.endTransmission();
+
+  // ====================================
+
+  // Step 2: Set the pointer to the conversion register
+  Wire.beginTransmission(I2Caddress);
+
+  //Point to Conversion register (read only , where we get our results from)
+  Wire.write(0b00000000);
+
+  // Send the above byte(s) as a WRITE
+  Wire.endTransmission();
+
+  // =======================================
+
+  // Step 3: Request the 2 converted bytes (MSB plus LSB)
+  Wire.requestFrom(I2Caddress, 2);
+
+  // Read the the first byte (MSB) and shift it 8 places to the left then read
+  // the second byte (LSB) into the last byte of this integer
+  convertedValue = -(Wire.read() << 8 | Wire.read()); //Sinal negativo se os pinos estiverem invertidos
+
+  i ++;
+  
+  actualValue[i] = abs(convertedValue);
+
+  
+  if(i >= 15){
     
-  temperatureAnt = temperature;
-  temperature = dht.readTemperature(); 
-
-  humidityAnt = humidity;
-  humidity = dht.readHumidity();
+    for(int j=0; j <= i; j++){
+      if(actualValue[j] > maxValue)
+        maxValue = actualValue[j];
+    }
     
-  if(temperature != temperatureAnt && !(isnan(temperature))){
-    //Serial.print("Temperatura = "); 
-    //Serial.print(temperature); 
-    //Serial.print(" °C      |       "); 
-    //Serial.print("Umidade = "); 
-    //Serial.print(humidity); 
-    //Serial.println(); 
+    Serial.println(maxValue);
+    if(maxValue > 100 && estaLigado == false){
+      //Serial.println("Conectou");
+      estaLigado = true;
+      inicioTempoLigado = millis(); 
+    }else if(maxValue <= 100 && estaLigado == true) {
+      //Serial.println("Desconectou");
+      fimTempoLigado = millis();
+      estaLigado = false;
+    }
 
-    snprintf(data, sizeof(data), "%.2f", temperature); 
-    strcpy(valueRequest, "t|");
-    strcat(valueRequest, data);
-    //Serial.print("===============> "); 
-    //Serial.println(valueRequest); 
+    Serial.println(abs(maxValue - maxValueAnt));
+    if(abs(maxValue - maxValueAnt) >= MARGEMDEERRO){
+      calcularConsumo();  
+    }
+    maxValueAnt = maxValue;
 
-    mqtt.publish(topic_publish.c_str(), valueRequest);
+    correnteAtual = (maxValue * multiplier * CORRENTEMAXIMA)/TENSAOMAXIMA; //Calculo para determinar o valor da corrente atual lida pelo sensor
+    kwValue = (correnteAtual * 220)/1000; //Calculo para determinar o valor atual de Kw
+    maxValue = 0;  
+
+    
+    delay(1000);
+    delay(0);
+    i=0;
   }
-
-  if(humidity != humidityAnt && !(isnan(humidity))){
-    
-    snprintf(data, sizeof(data), "%.2f", humidity); 
-    strcpy(valueRequest, "h|");
-    strcat(valueRequest, data);
-    //Serial.print("===============> "); 
-    //Serial.println(valueRequest); 
-    //Serial.println(); 
-
-    mqtt.publish(topic_publish.c_str(), valueRequest);
-         
+  
+  for(int k=0; k<3000; k++){
+    asm("nop");
   }
-    
+  
 }
+
+void calcularConsumo(){
+  float tempoConsumido = 0;
+  
+  if(estaLigado == true){
+    fimTempoLigado = millis();
+  }
+
+  
+  //Serial.println(inicioTempoLigado);
+  //Serial.println(fimTempoLigado);
+
+  tempoConsumido = (float(fimTempoLigado - inicioTempoLigado)/HOURSTOMILLIS);
+  inicioTempoLigado = millis();
+  fimTempoLigado = inicioTempoLigado;
+
+   //Serial.print("Corrente: ");
+   //Serial.println(correnteAtual);
+   //Serial.print("KW: ");
+   //Serial.println(kwValue);
+   //Serial.print("Tempo: ");
+   //Serial.println(tempoConsumido);
+  
+  consumoTotal +=  tempoConsumido * kwValue;
+}
+
