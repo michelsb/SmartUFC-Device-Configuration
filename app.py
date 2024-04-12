@@ -48,11 +48,33 @@ def getDeviceIdByEntityName(entity_name):
     device_id = device_id[0].lower()+device_id[1:]
     return device_id    
 
+def getDeviceIdByPcbIdType(pcbId,type):
+    device_id = type.lower()+pcbId
+    return device_id
+
 def getDeviceByPcbId(pcbId):
     
     parameters={'options':'keyValues','attrs':'id,type','q':'pcbId=='+pcbId}
     # returns: api_key, device_id, broker_ip, broker_port
 
+    try:
+        response = requests.get('http://'+ORION_HOST+':'+ORION_PORT+'/v2/entities', timeout=5,headers=headers,params=parameters)
+        response.raise_for_status()   
+        return response.json()
+    except requests.exceptions.HTTPError as errh:
+        print(errh)
+    except requests.exceptions.ConnectionError as errc:
+        print(errc)
+    except requests.exceptions.Timeout as errt:
+        print(errt)
+    except requests.exceptions.RequestException as err:
+        print(err)
+
+def getDeviceById(type, device_id):
+    
+    id = type+":"+device_id
+    parameters={'options':'keyValues','attrs':'id,type','q':'id=='+id}
+    # returns: api_key, device_id, broker_ip, broker_port
     try:
         response = requests.get('http://'+ORION_HOST+':'+ORION_PORT+'/v2/entities', timeout=5,headers=headers,params=parameters)
         response.raise_for_status()   
@@ -87,20 +109,33 @@ def getApiKeyByEntityType(entity_type):
 
 @app.route('/device',methods=['GET'])
 def getDeviceConfiguration():
-    args = request.args        
-    data = getDeviceByPcbId(args.get("id"))
-    if len(data) == 0:
-        return jsonify({"error": "No device created for this PCB ID",}), 403
-    if len(data) > 1:
-        return jsonify({"error": "More than one device for this PCB ID",}), 403
-    else:
-        device_id=getDeviceIdByEntityName(data[0]["id"])
-        device_config['device_id']=device_id
-        api_key=getApiKeyByEntityType(data[0]["type"]) # test if None
-        if device_id is None:
-            return jsonify({"error": "No service group found for this PCB ID",}), 403
-        device_config['api_key']=api_key
-        return jsonify(device_config)
+    args = request.args 
+    pcbId = args.get("pcbId")  
+    type = args.get("type")
+    device_id=getDeviceIdByPcbIdType(pcbId,type)
+    device_config['device_id']=device_id
+    api_key=getApiKeyByEntityType(type) # test if None
+    if api_key is None:
+        return jsonify({"error": "No service group found for this PCB ID",}), 403
+    device_config['api_key']=api_key
+    return jsonify(device_config) 
+
+# @app.route('/device',methods=['GET'])
+# def getDeviceConfiguration():
+#     args = request.args        
+#     data = getDeviceByPcbId(args.get("id"))
+#     if len(data) == 0:
+#         return jsonify({"error": "No device created for this PCB ID",}), 403
+#     if len(data) > 1:
+#         return jsonify({"error": "More than one device for this PCB ID",}), 403
+#     else:
+#         device_id=getDeviceIdByEntityName(data[0]["id"])
+#         device_config['device_id']=device_id
+#         api_key=getApiKeyByEntityType(data[0]["type"]) # test if None
+#         if device_id is None:
+#             return jsonify({"error": "No service group found for this PCB ID",}), 403
+#         device_config['api_key']=api_key
+#         return jsonify(device_config)
 
 
 if __name__ == '__main__':
